@@ -1,0 +1,108 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Information about a Paisa Saathi user and their ongoing financial dashboard scores",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "mobile_number": { "type": "string" },
+        "language": { "type": "string" },
+        "user_type": { "type": "string" },
+        "name": { "type": "string" },
+        "monthly_income": { "type": "number" },
+        "primary_goal": { "type": "string" },
+        "is_logged_in": { "type": "boolean" },
+        "is_onboarded": { "type": "boolean" },
+        "created_at": { "type": "string" },
+        "last_login": { "type": "string" },
+        "financial_score": { "type": "number" },
+        "savings_target": { "type": "number" },
+        "savings_accumulated": { "type": "number" },
+        "current_month_aay": { "type": "number" },
+        "current_month_kharch": { "type": "number" },
+        "current_month_bachat": { "type": "number" },
+        "channels_config": { "type": "array", "description": "Multi-channel update configuration presets" }
+      },
+      "required": ["id", "mobile_number"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "An expense item logged by the user, either manually or via voice recognition",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "user_id": { "type": "string" },
+        "category": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "title": { "type": "string" },
+        "type": { "type": "string" }
+      },
+      "required": ["id", "user_id", "amount", "category"]
+    },
+    "Goal": {
+      "title": "Goal",
+      "description": "A financial savings goal set by the user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "user_id": { "type": "string" },
+        "title": { "type": "string" },
+        "target_amount": { "type": "number" },
+        "accumulated_amount": { "type": "number" },
+        "category": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "user_id", "title", "target_amount"]
+    },
+    "Alert": {
+      "title": "Alert",
+      "description": "Important security warning or dashboard system notification shown to the user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "user_id": { "type": "string" },
+        "alert_title": { "type": "string" },
+        "alert_description": { "type": "string" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["id", "user_id", "alert_title"]
+    },
+    "ChatHistory": {
+      "title": "ChatHistory",
+      "description": "Record of conversational logs with Gemini's friendly financial mentor persona",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "user_id": { "type": "string" },
+        "user_message": { "type": "string" },
+        "ai_response": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "user_id", "user_message", "ai_response"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "User profiles and aggregate money tracker stats"
+    },
+    "expenses/{expenseId}": {
+      "schema": "Expense",
+      "description": "Client transactions representing expenses and income records"
+    },
+    "goals/{goalId}": {
+      "schema": "Goal",
+      "description": "Active or historical savings dreams of the user"
+    },
+    "alerts/{alertId}": {
+      "schema": "Alert",
+      "description": "Financial security advice or fraud warnings alerts list"
+    },
+    "chat_history/{chatId}": {
+      "schema": "ChatHistory",
+      "description": "Logs of interactions for preserving persistent conversational threads"
+    }
+  }
+}

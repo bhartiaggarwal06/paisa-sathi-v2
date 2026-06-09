@@ -1,0 +1,10 @@
+{
+  "name": "Remix: Paisa Saathi v2",
+  "description": "Apka Paisa, Apka Saathi - Simple conversational financial guidance companion for India\u0027s gig workers, delivery partners, and househelp.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

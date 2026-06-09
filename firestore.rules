@@ -1,0 +1,129 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global safety catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Common helper primitives
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Standalone Schema Validation Helpers (Anti-Update-Gap)
+    function isValidUser(data) {
+      return data.keys().hasAll(['id', 'mobile_number'])
+        && data.id is string && data.id.size() <= 128
+        && data.mobile_number is string && data.mobile_number.size() <= 20
+        && (data.get('language', '') is string && data.get('language', '').size() <= 100)
+        && (data.get('user_type', '') is string && data.get('user_type', '').size() <= 100)
+        && (data.get('name', '') is string && data.get('name', '').size() <= 200)
+        && (data.get('monthly_income', 0) is number && data.get('monthly_income', 0) >= 0)
+        && (data.get('primary_goal', '') is string && data.get('primary_goal', '').size() <= 300)
+        && (data.get('is_logged_in', false) is bool)
+        && (data.get('is_onboarded', false) is bool)
+        && (data.get('financial_score', 0) is number && data.get('financial_score', 0) >= 0)
+        && (data.get('savings_target', 0) is number && data.get('savings_target', 0) >= 0)
+        && (data.get('savings_accumulated', 0) is number && data.get('savings_accumulated', 0) >= 0)
+        && (data.get('current_month_aay', 0) is number && data.get('current_month_aay', 0) >= 0)
+        && (data.get('current_month_kharch', 0) is number && data.get('current_month_kharch', 0) >= 0)
+        && (data.get('current_month_bachat', 0) is number && data.get('current_month_bachat', 0) >= 0)
+        && (data.get('channels_config', []) is list);
+    }
+
+    function isValidExpense(data) {
+      return data.keys().hasAll(['id', 'user_id', 'amount', 'category'])
+        && data.id is string && data.id.size() <= 128
+        && data.user_id is string && data.user_id.size() <= 128
+        && data.category is string && data.category.size() <= 100
+        && data.amount is number && data.amount >= 0
+        && (data.get('date', '') is string && data.get('date', '').size() <= 100)
+        && (data.get('title', '') is string && data.get('title', '').size() <= 200)
+        && (data.get('type', '') is string && data.get('type', '').size() <= 100);
+    }
+
+    function isValidGoal(data) {
+      return data.keys().hasAll(['id', 'user_id', 'title', 'target_amount'])
+        && data.id is string && data.id.size() <= 128
+        && data.user_id is string && data.user_id.size() <= 128
+        && data.title is string && data.title.size() <= 200
+        && data.target_amount is number && data.target_amount >= 0
+        && (data.get('accumulated_amount', 0) is number && data.get('accumulated_amount', 0) >= 0)
+        && (data.get('category', '') is string && data.get('category', '').size() <= 100)
+        && (data.get('status', '') is string && data.get('status', '').size() <= 100);
+    }
+
+    function isValidAlert(data) {
+      return data.keys().hasAll(['id', 'user_id', 'alert_title'])
+        && data.id is string && data.id.size() <= 128
+        && data.user_id is string && data.user_id.size() <= 128
+        && data.alert_title is string && data.alert_title.size() <= 200
+        && (data.get('alert_description', '') is string && data.get('alert_description', '').size() <= 1000)
+        && (data.get('created_at', '') is string && data.get('created_at', '').size() <= 200);
+    }
+
+    function isValidChatHistory(data) {
+      return data.keys().hasAll(['id', 'user_id', 'user_message', 'ai_response'])
+        && data.id is string && data.id.size() <= 128
+        && data.user_id is string && data.user_id.size() <= 128
+        && data.user_message is string && data.user_message.size() <= 2000
+        && data.ai_response is string && data.ai_response.size() <= 5000
+        && (data.get('timestamp', '') is string && data.get('timestamp', '').size() <= 200);
+    }
+
+    // Users Collection rules
+    match /users/{userId} {
+      allow get: if isValidId(userId);
+      allow list: if true;
+      allow create: if isValidId(userId) && isValidUser(incoming());
+      allow update: if isValidId(userId) && isValidUser(incoming()) && incoming().mobile_number == existing().mobile_number;
+      allow delete: if false;
+    }
+
+    // Expenses Collection rules
+    match /expenses/{expenseId} {
+      allow get: if isValidId(expenseId);
+      allow list: if true;
+      allow create: if isValidId(expenseId) && isValidExpense(incoming());
+      allow update: if isValidId(expenseId) && isValidExpense(incoming()) && incoming().user_id == existing().user_id;
+      allow delete: if true;
+    }
+
+    // Goals Collection rules
+    match /goals/{goalId} {
+      allow get: if isValidId(goalId);
+      allow list: if true;
+      allow create: if isValidId(goalId) && isValidGoal(incoming());
+      allow update: if isValidId(goalId) && isValidGoal(incoming()) && incoming().user_id == existing().user_id;
+      allow delete: if true;
+    }
+
+    // Alerts Collection rules
+    match /alerts/{alertId} {
+      allow get: if isValidId(alertId);
+      allow list: if true;
+      allow create: if isValidId(alertId) && isValidAlert(incoming());
+      allow update: if isValidId(alertId) && isValidAlert(incoming());
+      allow delete: if true;
+    }
+
+    // Chat History Collection rules
+    match /chat_history/{chatId} {
+      allow get: if isValidId(chatId);
+      allow list: if true;
+      allow create: if isValidId(chatId) && isValidChatHistory(incoming());
+      allow update: if false;
+      allow delete: if false;
+    }
+  }
+}
