@@ -164,6 +164,7 @@ export default function App() {
 
   // Chat States
   const [messages, setMessages] = useState<any[]>([]);
+  const [revertedIds, setRevertedIds] = useState<string[]>([]);
   const [inputVal, setInputVal] = useState<string>('');
   const [isChatLoading, setIsChatLoading] = useState<boolean>(false);
   const [isListening, setIsListening] = useState<boolean>(false);
@@ -784,13 +785,32 @@ export default function App() {
     return () => clearInterval(interval);
   }, [currentScreen, activeTab, chatSecondsLeft, selectedLang]);
 
-  const triggerRecharge = () => {
+  const triggerRecharge = async () => {
     speakResponse(selectedLang === 'English'
       ? "Thank you! Recharge of ₹2 done. 10 minutes session has been activated!"
       : "धन्यवाद! ₹2 का रिचार्ज सफल रहा। अगले १० मिनट की बात-चीत सक्रिय हो गई है!"
     );
     setChatSecondsLeft(prev => prev + 600); // add 600 seconds (10 mins)
     setIsChatLocked(false);
+
+    if (user?.id) {
+      try {
+        await fetch('/api/expenses', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: user.id,
+            category: 'Manoranjan',
+            amount: 2,
+            title: selectedLang === 'English' ? 'Sathi Chat 5-min Limit Recharge' : 'पैसा साथी चैट रिचार्ज',
+            type: 'expense'
+          })
+        });
+        await fetchUserDashboardData(user.id);
+      } catch (err) {
+        console.error("Recharge expense save error:", err);
+      }
+    }
   };
 
   // --- START UP VOICE ENGINE HOOKS & CONTROLLERS ---
@@ -1888,6 +1908,32 @@ export default function App() {
       recognitionRef.current.stop();
     }
     setIsListening(false);
+  };
+
+  const handleRevertTransaction = async (id: string, amount: number, type: string) => {
+    try {
+      const res = await fetch(`/api/expenses/${id}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        setRevertedIds(prev => [...prev, id]);
+        
+        const undoMsg = selectedLang === 'English'
+          ? `Cleared ledger entry: ₹${amount} has been successfully reverted.`
+          : `बहीखाते से ₹${amount} हटा दिया गया है।`;
+          
+        speakResponse(undoMsg);
+        
+        if (user) {
+          fetchUserDashboardData(user.id);
+        }
+      } else {
+        const errorMsg = selectedLang === 'English' ? "Unable to revert ledger entry." : "बहीखाते से नहीं हटाया जा सका।";
+        speakResponse(errorMsg);
+      }
+    } catch (error) {
+      console.error("Error reverting ledger item:", error);
+    }
   };
 
   // 4. AIS Chat integration
@@ -3504,6 +3550,33 @@ export default function App() {
                                     </div>
                                   ) : "Sacha Saathi soch raha hai...")}
                                 </div>
+
+                                {m.added_transaction_id && (
+                                  <div id={`tx-wrap-${m.added_transaction_id}`} className="mt-3 p-2 bg-emerald-50 rounded-xl border border-emerald-200/60 flex flex-col gap-1.5 animate-fadeIn">
+                                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                                      <span className="text-[10px] text-emerald-800 font-bold flex items-center gap-1">
+                                        📊 Ledger Updated: +₹{m.transaction_amount} ({m.transaction_type === 'expense' ? 'Kharch' : 'Kamai'})
+                                      </span>
+                                      {revertedIds.includes(m.added_transaction_id) ? (
+                                        <span className="text-[9px] text-red-600 font-bold bg-red-50 py-0.5 px-2 rounded-md border border-red-150">Reverted ↩</span>
+                                      ) : (
+                                        <button
+                                          id={`btn-undo-${m.added_transaction_id}`}
+                                          onClick={() => handleRevertTransaction(m.added_transaction_id, m.transaction_amount || 0, m.transaction_type || '')}
+                                          className="text-[9px] bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-1 px-2.5 rounded-md flex items-center gap-0.5 shadow-xs transition-all active:scale-95 cursor-pointer"
+                                        >
+                                          ↩ Undo
+                                        </button>
+                                      )}
+                                    </div>
+                                    <span className="text-[9px] text-slate-500 italic font-semibold">
+                                      {selectedLang === 'English' 
+                                        ? `Logged: "${m.transaction_title}"`
+                                        : `विवरण: "${m.transaction_title}" दर्ज किया गया`
+                                      }
+                                    </span>
+                                  </div>
+                                )}
 
                                 {m.search_sources && m.search_sources.length > 0 && (
                                   <div className="mt-3 pt-2.5 border-t border-slate-100">

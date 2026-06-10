@@ -21,8 +21,7 @@ try {
     const firebaseConfig = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf-8'));
     const firebaseApp = initializeApp(firebaseConfig);
     firestoreDb = initializeFirestore(firebaseApp, {
-      experimentalForceLongPolling: true,
-      experimentalAutoDetectLongPolling: true
+      experimentalForceLongPolling: true
     }, firebaseConfig.firestoreDatabaseId);
     setLogLevel('error');
     console.log("Firebase App & Firestore successfully initialized server-side with forced Long Polling.");
@@ -855,51 +854,75 @@ async function startServer() {
     res.status(404).json({ error: "Goal not found" });
   });
 
+async function aiParseTransaction(message: string): Promise<{ amount: number; type: 'expense' | 'income'; title: string; category: string } | null> {
+  if (!message) return null;
+
+  if (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "MOCK_KEY") {
+    try {
+      const ai = getGeminiClient();
+      const geminiRes = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: `Determine if the following message describes a completed, real personal transaction (expense or income) that the user (such as a delivery partner, driver, maid, or gig worker) has ACTUALLY done, spent, or earned.
+Message: "${message}"
+
+Critical Language Guidance:
+- The user might write in English, Hindi (Devanagari or Romanized Hinglish, e.g., 'maine 200 rs petrol me kharch kiye', 'aaj 1500 kamaye', 'kirana saman 400 ka liya', 'chai pi liya ₹20'), Marathi, Bengali, or other Indian languages.
+- Translate and comprehend the meaning carefully.
+
+Strict Evaluation Criteria:
+1. ONLY detect a transaction if it represents a REAL, COMPLETED personal transaction (expense or income) that the user already performed, paid, sent, spent, earned, received, or bought.
+2. DO NOT detect any:
+   - Hypotheticals (e.g., 'What if I spend ₹500', 'If I save ₹1000')
+   - Ambitions or wishes (e.g., 'I want to save ₹3000', 'I need to save ₹500', 'target of saving ₹1500')
+   - Questions (e.g., 'kaise save karein ₹500', 'how should I invest ₹1000')
+   - Suggestions or general numbers (e.g., 'suggest how to save', 'should I keep ₹5000')
+   - References to transactions done by someone else (not the user themselves) unless it's a household expense that directly impacts their budget.
+3. If valid, return a clean JSON object containing:
+   - "amount": a positive integer number (the amount transacted).
+   - "type": "expense" or "income".
+   - "title": a short, friendly name/label for the item in simple Romanized Hindi or English (e.g., "Chai Nashta", "Room Kiraya", "Petrol Kharch", "Delivery Kamai", "Dawai", "Paisa Diya").
+   - "category": Choose one of "Kirana" (groceries, tea, food, daily raw goods), "Rent", "Travel" (fuel, auto, bus, transit), "Health" (medical, medicine, doctor), "Manoranjan" (refreshment, entertainment), "General" (others).
+4. If it is NOT a real, completed transaction, return absolutely empty: {}`,
+        config: {
+          systemInstruction: "You are a master transaction parser. You output ONLY valid, parsable, direct JSON and nothing else.",
+          temperature: 0.1,
+          responseMimeType: "application/json"
+        }
+      });
+
+      const rawText = (geminiRes.text || "").trim();
+      let parsed: any = {};
+      try {
+        parsed = JSON.parse(rawText);
+      } catch (e) {
+        const cleanJSONString = rawText.replace(/```json/i, '').replace(/```/g, '').trim();
+        parsed = JSON.parse(cleanJSONString);
+      }
+
+      if (parsed && typeof parsed.amount === 'number' && parsed.amount > 0 && (parsed.type === 'expense' || parsed.type === 'income')) {
+        console.log("[aiParseTransaction] Successfully extracted transaction via Gemini:", parsed);
+        return {
+          amount: parsed.amount,
+          type: parsed.type,
+          title: parsed.title || (parsed.type === 'expense' ? 'Kharch' : 'Kamai'),
+          category: parsed.category || 'General'
+        };
+      }
+    } catch (err: any) {
+      console.warn("[aiParseTransaction] Failed, falling back to offline parser:", err.message || err);
+    }
+  }
+
+  // Fallback to local regex-based function
+  return parseTransactionFromMessage(message);
+}
+
 // Helper function to extract cash transactions speak/written naturally by gig workers
 function parseTransactionFromMessage(message: string): { amount: number; type: 'expense' | 'income'; title: string; category: string } | null {
   if (!message) return null;
   const text = message.toLowerCase().trim();
-  
-  // 1. Strictly avoid any messages asking "how to save", "how much to save", or giving future "plans/views" about saving.
-  const querySavingTriggers = [
-    'how to save', 'how much to save', 'saving', 'save', 'bachat', 'bachayein', 'bachaye', 'bachao', 'bachana',
-    'kaise bachat', 'kaise bachaayein', 'kaise bachaaye', 'kaise save', 'kab save', 'where to save', 'sip kaise',
-    'invest', 'nivesh', 'sip', 'mutual fund', 'target', 'goal', 'planning', 'plan', 'challenge', 'chalenge'
-  ];
 
-  const queryOrGuidanceWords = [
-    'how to', 'how much', 'tips', 'tip', 'advice', 'suggest', 'guide', 'help', 'can i', 'should i', 'how do i',
-    'how can i', 'could i', 'opinion', 'learn', 'teach', 'study', 'education', 'kaise', 'kab', 'tarika', 'tareeka',
-    'batao', 'samjhao', 'sikhao', 'seekhna', 'chahta hoon', 'chahti hoon', 'chahta hu', 'chahti hu', 'soch raha',
-    'soch rahi', 'idea', 'what if', 'kya hota hai', 'kya hai'
-  ];
-
-  const hypotheticalPhrases = [
-    'can save', 'will save', 'want to save', 'try to save', 'hope to save', 'i can', 'i will', 'a month',
-    'every month', 'monthly', 'per month', 'har mahine', 'har mahina', 'har din', 'roz', 'rozana', 'daily',
-    'yearly', 'per year', 'har saal', 'bacha sakta', 'bacha sakti', 'bacha sakte', 'bachana chahta',
-    'bachana chahti', 'saving goal', 'save target', 'soch raha hoon', 'soch rahi hoon'
-  ];
-
-  // If the message has saving/planning triggers AND query/guidance words, OR hypothetical phrases,
-  // then the user is asking/talking about "how to save", "how much to save", or their views, etc.
-  // We MUST reject and NOT register any transaction.
-  const hasSavingTrigger = querySavingTriggers.some(w => text.includes(w));
-  const hasQueryOrGuidance = queryOrGuidanceWords.some(w => text.includes(w));
-  const hasHypothetical = hypotheticalPhrases.some(w => text.includes(w));
-
-  if (hasHypothetical || (hasSavingTrigger && hasQueryOrGuidance)) {
-    return null;
-  }
-
-  // Also, if they are talking generalities like "i can save 3000", even if not matching above directly:
-  if (text.includes('can save') || text.includes('i can') || text.includes('i will') || text.includes('want to save') || text.includes('planning to')) {
-    return null;
-  }
-
-  // Next, let's parse the numbers out.
-  // Regexp for numbers, including Devanagari numerals
-  // Replace Devanagari numerals to English
+  // 1. First, parse any numerals or spelled numbers from text
   const devanagariMap: Record<string, string> = {
     '०': '0', '१': '1', '२': '2', '३': '3', '४': '4', '५': '5', '६': '6', '७': '7', '८': '8', '९': '9'
   };
@@ -916,15 +939,11 @@ function parseTransactionFromMessage(message: string): { amount: number; type: '
     'sau': 100, 'so': 100, 'hazar': 1000, 'hazari': 1000, 'thousand': 1000, 'lakh': 100000
   };
 
-  // Convert spelled numbers to numeric form
   let amount = 0;
-  
-  // Standard Regex for digits
   const numMatch = cleanedText.match(/(?:rs|inr|₹|approx)?\.?\s*(\d+)/i);
   if (numMatch) {
     amount = parseInt(numMatch[1], 10);
   } else {
-    // Check spelled words
     const words = cleanedText.split(/\s+/);
     let tempVal = 0;
     for (let i = 0; i < words.length; i++) {
@@ -944,19 +963,60 @@ function parseTransactionFromMessage(message: string): { amount: number; type: '
     }
   }
 
+  // 2. Special Case check for "recharge of 2 rupees after 5 mins free chat that should add in expense"
+  // If user mentions recharge (or recharged, reacharge, etc.) and the amount is exactly 2:
+  const isRechargeTerm = cleanedText.includes('recharge') || cleanedText.includes('reacharge') || cleanedText.includes('recharged');
+  if (isRechargeTerm && (amount === 2 || cleanedText.includes('two') || cleanedText.includes('do rupee') || cleanedText.includes('2 rps') || cleanedText.includes('2 rupees') || cleanedText.includes('₹2') || cleanedText.includes('rs 2'))) {
+    return {
+      amount: 2,
+      type: 'expense',
+      title: 'Paisa Saathi Chat Recharge',
+      category: 'General'
+    };
+  }
+
+  // If amount is 0, we can't parse a transaction anyway
   if (amount <= 0) return null;
 
-  // Now, the user says: "Add if and only if user explicitly mentioned that he spent particular amount in rent , food , grocery etc."
-  // Let's check for strong action keywords or exact category words that verify they actually did it.
-  
-  // Strict list of past/completed indicator words showing an action already did (spent or received):
-  const completedExpenseVerbs = [
-    'spent', 'spent', 'kharida', 'kharide', 'pay kiya', 'pay kiye', 'paid', 'diya', 'diye', 'diyya', 'bhara',
-    'gaye', 'kharch', 'kharcha', 'spent', 'bought', 'buy', 'payment done', 'sent'
+  // 3. Strictly avoid any future-looking suggestions, requests for help, tips or views.
+  // "if user asking for any suggestion and then giving the amount jaise usey 2000 bachana hai . Aisi suggestions ko expense mai add ni kra."
+  // "if user says i ca save 3000 a month , then he is just telling his views no need to add in expense ."
+  const suggestionsAndPlansKeywords = [
+    'bachana hai', 'bachana chahta', 'bachana chahti', 'bachana chahte', 'bachane ke', 'bachane ka', 'bachana',
+    'karna hai bachat', 'bachat karna', 'bachat kaise', 'save karna hai', 'save karna chahta', 'save karna chahti',
+    'want to save', 'planning to save', 'how to save', 'how much to save', 'how should i save', 'can i save',
+    'aiming to save', 'try to save', 'hope to save', 'suggest', 'suggestion', 'suggestions', 'advice', 'tips',
+    'सलाह', 'सुझाव', 'sujhav', 'tarika', 'tareeka', 'tips dijiye', 'sip', 'invest', 'nivesh', 'mutual fund',
+    'saving goal', 'save target', 'planning', 'target of', 'challange', 'challenge', 'future', 'kaise bachaun',
+    'kaise bachaaye', 'kaise save karein', 'how do i save', 'where should i invest', 'where to invest',
+    'i can save', 'i want to save', 'will save', 'saving method', 'how can i save', 'suggestion dijiye',
+    'advice dijiye', 'idea', 'can i'
   ];
-  
-  const completedIncomeVerbs = [
-    'earned', 'kamaya', 'kamaye', 'mila', 'mile', 'received', 'receive', 'credited', 'paisa aaya', 'aaya'
+
+  const hasSuggestionOrPlan = suggestionsAndPlansKeywords.some(kw => cleanedText.includes(kw));
+  if (hasSuggestionOrPlan) {
+    return null;
+  }
+
+  // Also if they general-talk saving like "i can save 3000", even if not covered above:
+  if (cleanedText.includes('can save') || cleanedText.includes('i can') || cleanedText.includes('i will') || cleanedText.includes('want to save') || cleanedText.includes('planning to')) {
+    return null;
+  }
+
+  // 4. Check for explicit COMPLETED indicator words showing an action they already did (spent/received):
+  // Let's list these completed triggers.
+  const completedExpenseIndicators = [
+    // Hindi Completed verbs/phrases
+    'kharch', 'kharcha', 'kharach', 'diya', 'diye', 'diyya', 'bhara', 'gaye', 'kharida', 'khaya', 'karaya', 'bheja', 'bheje',
+    'pay kiya', 'pay kiye', 'payment kiya', 'payment ho gaya', 'kharch ho', 'kharcha ho', 'kharach kra', 'kharach kiya',
+    'kharch kra', 'kharch kiya', 'paisa diya', 'paise diye', 'rupaya diya', 'rupaye diye', 'kisi ko diya', 'kharch kar diya',
+    // English Completed verbs/phrases
+    'spent', 'paid', 'gave', 'sent', 'bought', 'purchased', 'recharged', 'transferred', 'lost', 'lent',
+    'gave to', 'paid to', 'sent to', 'recharge done', 'done recharge', 'bill paid', 'done payment', 'made payment'
+  ];
+
+  const completedIncomeIndicators = [
+    'kamaya', 'kamaye', 'mila', 'mile', 'aaya', 'aayeen', 'received', 'earned', 'credited', 'paisa aaya', 'salary pay'
   ];
 
   // Specific spending/income categories specified by user (rent, food, grocery etc.)
@@ -968,27 +1028,23 @@ function parseTransactionFromMessage(message: string): { amount: number; type: '
     'medicine', 'dawai', 'medical', 'doctor', 'ill', 'bimar', 'hospital', 'recharge'
   ];
 
-  const hasExpenseVerb = completedExpenseVerbs.some(w => cleanedText.includes(w));
-  const hasIncomeVerb = completedIncomeVerbs.some(w => cleanedText.includes(w));
+  const hasExpenseVerb = completedExpenseIndicators.some(w => cleanedText.includes(w));
+  const hasIncomeVerb = completedIncomeIndicators.some(w => cleanedText.includes(w));
   const hasItemKeyword = spendingItemKeywords.some(w => cleanedText.includes(w));
 
-  // Determine type
   let type: 'expense' | 'income' = 'expense';
-  
-  // Check if it's explicitly an income they already earned
+
+  // Determine type and validate
   if (hasIncomeVerb && !hasExpenseVerb) {
     type = 'income';
   } else if (hasExpenseVerb) {
     type = 'expense';
+  } else if (hasItemKeyword) {
+    // If they say a category directly like "grocery 500" or "kirana 300", it means they did it.
+    type = 'expense';
   } else {
-    // If no verb is found, but they entered something like "grocery 500", "chai 10", let's treat it as completed if it has an item keyword.
-    // Otherwise, do not add because they didn't explicitly mention spending or specific item.
-    if (hasItemKeyword) {
-      type = 'expense';
-    } else {
-      // No explicit verb or item, reject to ensure we add ONLY what user already did as an explicit expense/income
-      return null;
-    }
+    // If there is no completed verb and no specific spending category keyword, we won't add it.
+    return null;
   }
 
   // Categorize
@@ -1013,13 +1069,16 @@ function parseTransactionFromMessage(message: string): { amount: number; type: '
   } else if (cleanedText.includes('rent') || cleanedText.includes('kiraya') || cleanedText.includes('room') || cleanedText.includes('makaan')) {
     category = 'Rent';
     title = 'Makaan Kiraya';
+  } else if (cleanedText.includes('kisi ko') || cleanedText.includes('kisko')) {
+    category = 'General';
+    title = type === 'expense' ? 'Kisi ko paise diye' : 'Kisi se paise mile';
   }
 
   if (!title) {
     if (type === 'expense') {
-      title = 'Voice Kharch';
+      title = cleanedText.includes('diya') || cleanedText.includes('diye') ? 'Paisa Diya' : 'Chat Kharch';
     } else {
-      title = 'Voice Kamai';
+      title = cleanedText.includes('mila') || cleanedText.includes('mile') ? 'Paisa Mila' : 'Chat Kamai';
     }
   }
 
@@ -1046,48 +1105,14 @@ function parseTransactionFromMessage(message: string): { amount: number; type: '
       return res.status(400).json({ error: "Message is required" });
     }
 
-    // Try to auto-parse cash expenditure or income messages
-    let transactionNote = "";
-    if (user && message) {
-      const parsedTx = parseTransactionFromMessage(message);
-      if (parsedTx) {
-        const { amount, type, title, category } = parsedTx;
-        const newExp = {
-          id: "exp_" + Math.random().toString(36).substr(2, 9),
-          user_id: user.id,
-          category: category,
-          amount: Number(amount),
-          date: "Aaj, " + new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
-          title: title,
-          type: type
-        };
-        db.expenses.unshift(newExp);
-        
-        if (type === 'expense') {
-          user.current_month_kharch = (user.current_month_kharch || 0) + Number(amount);
-        } else {
-          user.current_month_aay = (user.current_month_aay || 0) + Number(amount);
-        }
-        user.current_month_bachat = Math.max(0, user.current_month_aay - user.current_month_kharch);
-        
-        // Adjust financial score
-        if (user.current_month_kharch > user.current_month_aay) {
-          user.financial_score = Math.max(20, user.financial_score - 3);
-        } else {
-          user.financial_score = Math.min(99, user.financial_score + 1);
-        }
-        
-        saveDB(db);
+    let aiResponse = "";
+    let searchSources: { title: string; url: string }[] = [];
+    let addedTransactionId = "";
+    let transactionAmount = 0;
+    let transactionTitle = "";
+    let transactionType = "";
 
-        if (selectedLanguage === 'English') {
-          transactionNote = `\n\n[Note: Successfully recorded ₹${amount} ${type === 'expense' ? 'expense' : 'income'} for "${title}" inside your Hisab-Kitab ledger. Your balances have been updated!]`;
-        } else {
-          transactionNote = `\n\n[नोट: आपके दैनिक बहीखाते में ₹${amount} का ${type === 'expense' ? 'खर्च' : 'कमाई'} ("${title}") जोड़ दिया गया है। आपका कुल बैलेंस अपडेट हो गया है!]`;
-        }
-      }
-    }
-
-    // System instruction based on the requirements
+    // System instruction detailing both friendly conversation rules and correct structural JSON parsing
     const systemInstruction = `
 You are "Paisa Saathi", a very friendly, reassuring, simple, non-judgmental financial guidance friend for financially underserved users in India (specifically delivery agents, gig workers, drivers, construction workers, and househelp).
 The tagline is "Aapka Paisa, Aapka Saathi".
@@ -1108,14 +1133,32 @@ YOUR CHAT RULES:
      * Educational steps: Explain that they need: 1. Bank account, 2. PAN card, 3. Mobile number linked.
 8. If you don't know the exact answer or are unsure: "मुझे पूरी जानकारी नहीं है, लेकिन मैं समझाने की कोशिश करता हूँ" followed by simple layperson explanation.
 9. Display reassurance: Reassure them with thoughts like "हम आपका पैसा नहीं छूते, सिर्फ मार्गदर्शन करते हैं" where appropriate!
-`;
 
-    let aiResponse = "";
-    let searchSources: { title: string; url: string }[] = [];
+TRANSACTION DETECTION MANDATE:
+Determine if the user's latest message or conversation describes any completed, real personal transaction (expense or income) that the user HAS ACTUALLY DONE, SPENT, OR EARNED (for example: "मैंने दोस्त को ₹300 दिए", "aaj 400 kamaya", "petrol me ₹200 kharch ho gye", "dost ko ₹300 udhaar diye").
+Rule 1. ONLY detect it as a transaction if it is a completed, real past transaction.
+Rule 2. DO NOT detect any:
+   - Hypotheticals or wishes (e.g., "I wish to save ₹1000", "What if I spend ₹500", "planning to save", "bachein kaise")
+   - Intentions or plans (e.g., "मैं 1000 रुपए सेव कर सकती हूँ", "mheene ka ₹500 bachaunga", "I can save 1000", "planning to buy a scooter")
+   - Questions (e.g., "How to save ₹500?")
+
+RESPONSE JSON SCHEMA:
+You MUST output your entire response in this exact JSON schema:
+{
+  "ai_response": "friendly conversation response text matching all chat rules above in simple language (if Hindi, use proper simple Devanagari script)",
+  "transaction": null or {
+    "amount": positive integer,
+    "type": "expense" or "income",
+    "title": "short friendly label in Romanized Hindi or simple English (e.g., 'Dost ko diye', 'Petrol Kharch', 'Chai Nashta', 'Ration Saman', 'Dawa Khariidi', 'Delivery Kamai')",
+    "category": "Kirana" or "Rent" or "Travel" or "Health" or "Manoranjan" or "General"
+  }
+}
+`;
 
     try {
       if (process.env.GEMINI_API_KEY) {
         const ai = getGeminiClient();
+        
         // Load recent chat history for context to continue conversation naturally
         const previousChats = db.chat_history
           .filter((c: any) => c.user_id === userId)
@@ -1141,52 +1184,95 @@ YOUR CHAT RULES:
 
         let geminiRes;
         try {
-          // Attempt 1: call with search grounding
           geminiRes = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
+            model: "gemini-3.5-flash",
             contents: contents,
             config: {
               systemInstruction: systemInstruction,
-              temperature: 0.7,
-              topP: 0.9,
-              tools: [{ googleSearch: {} }]
+              temperature: 0.3,
+              responseMimeType: "application/json"
             }
           });
         } catch (searchError: any) {
-          console.warn("Gemini Search Grounding call failed (likely due to missing billing or quota limitations under the free tier). Retrying without Search tool...", searchError.message || searchError);
-          // Attempt 2: retry WITHOUT tools (fully compatible with free tier API key)
+          console.warn("Gemini JSON Schema call failed, retrying...", searchError.message || searchError);
           geminiRes = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
+            model: "gemini-3.5-flash",
             contents: contents,
             config: {
               systemInstruction: systemInstruction,
-              temperature: 0.7,
-              topP: 0.9
+              temperature: 0.3,
+              responseMimeType: "application/json"
             }
           });
         }
 
-        aiResponse = geminiRes.text || "Main abhi samajh nahi paya. Ek baar phir se poochein?";
+        const rawText = (geminiRes.text || "").trim();
+        let parsed: any = {};
+        try {
+          parsed = JSON.parse(rawText);
+        } catch (e) {
+          const cleanJSONString = rawText.replace(/```json/i, '').replace(/```/g, '').trim();
+          parsed = JSON.parse(cleanJSONString);
+        }
+
+        aiResponse = parsed.ai_response || "Main abhi samajh nahi paya. Ek baar phir se poochein?";
         
-        // Extract links from search grounding metadata
-        const chunks = geminiRes.candidates?.[0]?.groundingMetadata?.groundingChunks;
-        if (chunks && Array.isArray(chunks)) {
-          for (const chunk of chunks) {
-            if (chunk.web && chunk.web.uri) {
-              searchSources.push({
-                title: chunk.web.title || "Internet Results",
-                url: chunk.web.uri
-              });
-            }
+        if (user && parsed.transaction && typeof parsed.transaction.amount === 'number' && parsed.transaction.amount > 0) {
+          const { amount, type, title, category } = parsed.transaction;
+          const newExpId = "exp_" + Math.random().toString(36).substr(2, 9);
+          const newExp = {
+            id: newExpId,
+            user_id: user.id,
+            category: category || 'General',
+            amount: Number(amount),
+            date: "Aaj, " + new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+            title: title || (type === 'expense' ? 'Kharch' : 'Kamai'),
+            type: type
+          };
+          db.expenses.unshift(newExp);
+          
+          if (type === 'expense') {
+            user.current_month_kharch = (user.current_month_kharch || 0) + Number(amount);
+          } else {
+            user.current_month_aay = (user.current_month_aay || 0) + Number(amount);
+          }
+          user.current_month_bachat = Math.max(0, user.current_month_aay - user.current_month_kharch);
+          
+          if (user.current_month_kharch > user.current_month_aay) {
+            user.financial_score = Math.max(20, user.financial_score - 3);
+          } else {
+            user.financial_score = Math.min(99, user.financial_score + 1);
+          }
+          
+          saveDB(db);
+
+          addedTransactionId = newExpId;
+          transactionAmount = Number(amount);
+          transactionTitle = title || (type === 'expense' ? 'Kharch' : 'Kamai');
+          transactionType = type;
+
+          if (selectedLanguage === 'English') {
+            aiResponse += `\n\n[Note: Recorded ₹${amount} inside your Hisab-Kitab ledger. Balances updated!]`;
+          } else {
+            aiResponse += `\n\n[नोट: आपके बहीखाते में ₹${amount} दर्ज कर दिया गया है। बैलेंस अपडेट हो गया है!]`;
+          }
+
+          if (firestoreDb) {
+            setDoc(doc(firestoreDb, 'expenses', newExpId), newExp).catch(err => {
+              console.error("[Firestore] Realtime expense write error:", err);
+            });
+            setDoc(doc(firestoreDb, 'users', user.id), user).catch(err => {
+               console.error("[Firestore] Realtime user update error:", err);
+            });
           }
         }
       } else {
         throw new Error("GEMINI_API_KEY is not defined in environment.");
       }
-    } catch (e: any) {
-      console.error("Gemini API Error under /api/chat:", e);
+    } catch (err: any) {
+      console.error("Gemini API Error or parsing error under /api/chat, falling back:", err);
 
-      const isQuotaExceeded = e.status === 429 || (e.message && (e.message.toLowerCase().includes('429') || e.message.toLowerCase().includes('quota') || e.message.toLowerCase().includes('resource_exhausted')));
+      const isQuotaExceeded = err.status === 429 || (err.message && (err.message.toLowerCase().includes('429') || err.message.toLowerCase().includes('quota') || err.message.toLowerCase().includes('resource_exhausted')));
       
       let errorHeader = "";
       if (isQuotaExceeded) {
@@ -1195,28 +1281,63 @@ YOUR CHAT RULES:
         errorHeader = "⚠️ [नोट: AI सर्वर से सही जवाब नहीं मिल पाया। स्थानीय बुद्धिमत्ता से आपका मार्गदर्शक उत्तर प्रस्तुत है]:\n\n";
       }
 
-      // High-quality local offline fallback based on common worker keywords
-      const lowerMsg = message.toLowerCase();
-      let offlineText = "";
+      // Try local offline parser to extract completed transactions!
+      let localParsed = null;
+      if (user && message) {
+        localParsed = parseTransactionFromMessage(message);
+      }
 
-      if (lowerMsg.includes('sip') || lowerMsg.includes('नियम') || lowerMsg.includes('निवेश') || lowerMsg.includes('invest')) {
-        offlineText = `SIP (सिस्टमैटिक इन्वेस्टमेंट प्लान) का मतलब है हर महीने थोड़ा-थोड़ा पैसा बचाकर म्यूचुअल फंड या सरकारी योजनाओं (जैसे पोस्ट ऑफिस RD) में निवेश करना। आप बहुत कम पैसों (जैसे ₹100 या ₹500) से शुरुआत कर सकते हैं। इसके लिए आपको बैंक खाता, पैन कार्ड और लिंक किया हुआ मोबाइल नंबर ही चाहिए। क्या आप महीने का ₹500 बचा सकते हैं?`;
-      } else if (lowerMsg.includes('बचाए') || lowerMsg.includes('save') || lowerMsg.includes('बचत') || lowerMsg.includes('saving')) {
-        offlineText = `बचत करने का सर्वोत्तम नियम है कि हर दिन सिर्फ ₹20 या ₹50 की फिजूलखर्ची (जैसे गुटखा, फालतू चाय, बाहर का खाना) को बचाकर किनारे रख लें। यह पैसा महीने के अंत में ₹1000 बन जाएगा। आप इस बचत से सुरक्षित रिकरिंग डिपॉजिट (RD) शुरू कर सकते हैं।`;
-      } else if (lowerMsg.includes('cut') || lowerMsg.includes('कटा') || lowerMsg.includes('fees') || lowerMsg.includes('पैसा') || lowerMsg.includes('charges')) {
-        offlineText = `पैसा साथी (Paisa Saathi) पूर्णतः निःशुल्क और सुरक्षित मार्गदर्शक है, हम आपका कोई पैसा नहीं काटते। यदि आपके बैंक से पैसे कटे हैं, तो तुरंत बैंक शाखा जाकर अपनी पासबुक अपडेट करवाएं या बैंक की हेल्पलाइन नंबर पर बात करें।`;
-      } else if (lowerMsg.includes('fraud') || lowerMsg.includes('सुरक्षित') || lowerMsg.includes('सच्चा') || lowerMsg.includes('fake') || lowerMsg.includes('secure')) {
-        offlineText = `सुरक्षित रहने के लिए सबसे बड़ा नियम ध्यान रखें: कभी भी कोई अनजान व्यक्ति अगर आपसे फ़ोन पर OTP, ATM PIN या यूपीआई पासवर्ड मांगे, तो उसे भूलकर भी न बताएं। हम आपका पैसा कभी नहीं छूते, केवल सही वित्तीय मार्गदर्शन देते हैं ताकि आपका भविष्य उज्जवल हो।`;
-      } else if (lowerMsg.includes('loan') || lowerMsg.includes('उधार') || lowerMsg.includes('कर्ज') || lowerMsg.includes('udhaar')) {
-        offlineText = `जब तक बहुत ज्यादा मजबूरी (जैसे इलाज) न हो, महंगे ब्याज वाले प्राइवेट फाइनेंस ऐप्स से बचकर रहें। हमेशा सरकारी बैंक (जैसे SBI, BOB) या क्रेडिट यूनियन से ही संपर्क करें जहाँ ब्याज दर कम और नियम सुरक्षित होते हैं।`;
-      } else if (lowerMsg.includes('gold') || lowerMsg.includes('सोना') || lowerMsg.includes('sona') || lowerMsg.includes('silver')) {
-        offlineText = `सोना निवेश का बहुत अच्छा विकल्प है। आजकल आप 'डिजिटल गोल्ड' की मदद से केवल ₹10 या ₹100 में शुद्ध सोना खरीदकर ऐप में सुरक्षित रख सकते हैं। इसमें सोनार के यहाँ मेकिंग चार्ज या चोरी का झंझट नहीं रहता।`;
-      } else if (lowerMsg.includes('budget') || lowerMsg.includes('kharch') || lowerMsg.includes('खर्च') || lowerMsg.includes('spent')) {
-        offlineText = `खर्चों पर काबू पाने के लिए हमारे 'लक्ष्य व खर्च' (Goals) पेज पर जाएं और 'नया खर्च जोड़ें' बटन दबाकर हर दिन का हिसाब लिखें। इससे आपको स्पष्ट रूप से पता चलेगा कि पैसा अनावश्यक कहाँ खर्च हो रहा है।`;
-      } else if (lowerMsg.includes('mural') || lowerMsg.includes('sikhein') || lowerMsg.includes('learn') || lowerMsg.includes('योजना')) {
-        offlineText = `आप हमारे 'सीखें और बढ़ें' (Sikhein) पेज पर जाकर विभिन्न योजनाओं, म्यूचुअल फंड और सोने के आसान कॉमिक्स व वीडियोस देख सकते हैं। बस नीचे दिख रहे 'सीखें' बटन पर क्लिक करें।`;
+      let offlineText = "";
+      if (localParsed) {
+        const { amount, type, title, category } = localParsed;
+        const newExpId = "exp_" + Math.random().toString(36).substr(2, 9);
+        const newExp = {
+          id: newExpId,
+          user_id: user.id,
+          category: category,
+          amount: Number(amount),
+          date: "Aaj, " + new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+          title: title,
+          type: type
+        };
+        db.expenses.unshift(newExp);
+        
+        if (type === 'expense') {
+          user.current_month_kharch = (user.current_month_kharch || 0) + Number(amount);
+        } else {
+          user.current_month_aay = (user.current_month_aay || 0) + Number(amount);
+        }
+        user.current_month_bachat = Math.max(0, user.current_month_aay - user.current_month_kharch);
+        
+        saveDB(db);
+
+        addedTransactionId = newExpId;
+        transactionAmount = Number(amount);
+        transactionTitle = title;
+        transactionType = type;
+
+        if (selectedLanguage === 'English') {
+          offlineText = `I have successfully written down the transaction: ₹${amount} for "${title}". Your ledger is updated.`;
+        } else {
+          offlineText = `ठीक है radha जी (साथी)! मैंने बहीखाते में ₹${amount} का ${type === 'expense' ? 'खर्च' : 'आमदनी'} ("${title}") लिख लिया है।`;
+        }
+
+        if (firestoreDb) {
+          setDoc(doc(firestoreDb, 'expenses', newExpId), newExp).catch(err => {});
+          setDoc(doc(firestoreDb, 'users', user.id), user).catch(err => {});
+        }
       } else {
-        offlineText = `नमस्ते ${userName} जी! मैं आपका 'पैसा साथी' हूँ। मैं आपको रोज़ाना बचत करने, बिना जोखिम छोटे सुरक्षित निवेश (म्यूचुअल फंड/SIP) शुरू करने और वित्तीय सुरक्षा से जुड़े सुझाव दे सकता हूँ। आप बेझिझक मुझसे बचत या खर्च का प्रश्न पूछें!`;
+        // High-quality local offline response based on common worker keywords
+        const lowerMsg = message.toLowerCase();
+        if (lowerMsg.includes('sip') || lowerMsg.includes('नियम') || lowerMsg.includes('निवेश') || lowerMsg.includes('invest')) {
+          offlineText = `SIP (सिस्टमैटिक इन्वेस्टमेंट प्लान) का मतलब है हर महीने थोड़ा-थोड़ा पैसा बचाकर म्यूचुअल फंड या सरकारी योजनाओं (जैसे पोस्ट ऑफिस RD) में निवेश करना। आप बहुत कम पैसों (जैसे ₹100 या ₹500) से शुरुआत कर सकते हैं। इसके लिए आपको बैंक खाता, पैन कार्ड और लिंक किया हुआ मोबाइल नंबर ही चाहिए। क्या आप महीने का ₹500 बचा सकते हैं?`;
+        } else if (lowerMsg.includes('बचाए') || lowerMsg.includes('save') || lowerMsg.includes('बचत') || lowerMsg.includes('saving')) {
+          offlineText = `बचत करने का सर्वोत्तम नियम है कि हर दिन सिर्फ ₹20 या ₹50 की फिजूलखर्ची (जैसे गुटखा, फालतू चाय, बाहर का खाना) को बचाकर किनारे रख लें। यह पैसा महीने के अंत में ₹1000 बन जाएगा। आप इस बचत से सुरक्षित रिकरिंग डिपॉजिट (RD) शुरू कर सकते हैं।`;
+        } else if (lowerMsg.includes('fraud') || lowerMsg.includes('सुरक्षित') || lowerMsg.includes('fake') || lowerMsg.includes('secure')) {
+          offlineText = `सुरक्षित रहने के लिए सबसे बड़ा नियम ध्यान रखें: कभी भी कोई अनजान व्यक्ति अगर आपसे फ़ोन पर OTP, ATM PIN या यूपीआई पासवर्ड मांगे, तो उसे भूलकर भी न बताएं। हम आपका पैसा कभी नहीं छूते, केवल सही वित्तीय मार्गदर्शन देते हैं!`;
+        } else {
+          offlineText = `नमस्ते ${userName} जी! मैं आपका 'पैसा साथी' हूँ। मैं आपको रोज़ाना बचत करने, बिना जोखिम छोटे सुरक्षित निवेश शुरू करने और वित्तीय सुरक्षा से जुड़े सुझाव दे सकता हूँ। आप बेझिझक मुझसे बचत या खर्च का प्रश्न पूछें!`;
+        }
       }
 
       aiResponse = errorHeader + offlineText;
@@ -1227,10 +1348,6 @@ YOUR CHAT RULES:
       ];
     }
 
-    if (transactionNote) {
-      aiResponse += transactionNote;
-    }
-
     // Save chat segment in the db
     const newChat = {
       id: "chat_" + Math.random().toString(36).substr(2, 9),
@@ -1238,7 +1355,11 @@ YOUR CHAT RULES:
       user_message: message,
       ai_response: aiResponse,
       search_sources: searchSources,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      added_transaction_id: addedTransactionId || undefined,
+      transaction_amount: transactionAmount || undefined,
+      transaction_title: transactionTitle || undefined,
+      transaction_type: transactionType || undefined
     };
     db.chat_history.push(newChat);
     saveDB(db);
@@ -1792,7 +1913,7 @@ Example output: { "detected_language": "Hindi", "response_text": "1. सबस�
         try {
           const ai = getGeminiClient();
           const geminiRes = await ai.models.generateContent({
-            model: "gemini-2.5-flash",
+            model: "gemini-3.5-flash",
             contents: `Evaluate this user utterance spoken on the calling interface: "${message}". Current Active Tab is "${activeTab || 'home'}".`,
             config: {
               systemInstruction: systemInstruction,

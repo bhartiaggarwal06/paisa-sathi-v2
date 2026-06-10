@@ -28,16 +28,16 @@ service cloud.firestore {
         && (data.get('language', '') is string && data.get('language', '').size() <= 100)
         && (data.get('user_type', '') is string && data.get('user_type', '').size() <= 100)
         && (data.get('name', '') is string && data.get('name', '').size() <= 200)
-        && (data.get('monthly_income', 0) is number && data.get('monthly_income', 0) >= 0)
+        && ((data.get('monthly_income', 0) is int || data.get('monthly_income', 0) is float) && data.get('monthly_income', 0) >= 0)
         && (data.get('primary_goal', '') is string && data.get('primary_goal', '').size() <= 300)
         && (data.get('is_logged_in', false) is bool)
         && (data.get('is_onboarded', false) is bool)
-        && (data.get('financial_score', 0) is number && data.get('financial_score', 0) >= 0)
-        && (data.get('savings_target', 0) is number && data.get('savings_target', 0) >= 0)
-        && (data.get('savings_accumulated', 0) is number && data.get('savings_accumulated', 0) >= 0)
-        && (data.get('current_month_aay', 0) is number && data.get('current_month_aay', 0) >= 0)
-        && (data.get('current_month_kharch', 0) is number && data.get('current_month_kharch', 0) >= 0)
-        && (data.get('current_month_bachat', 0) is number && data.get('current_month_bachat', 0) >= 0)
+        && ((data.get('financial_score', 0) is int || data.get('financial_score', 0) is float) && data.get('financial_score', 0) >= 0)
+        && ((data.get('savings_target', 0) is int || data.get('savings_target', 0) is float) && data.get('savings_target', 0) >= 0)
+        && ((data.get('savings_accumulated', 0) is int || data.get('savings_accumulated', 0) is float) && data.get('savings_accumulated', 0) >= 0)
+        && ((data.get('current_month_aay', 0) is int || data.get('current_month_aay', 0) is float) && data.get('current_month_aay', 0) >= 0)
+        && ((data.get('current_month_kharch', 0) is int || data.get('current_month_kharch', 0) is float) && data.get('current_month_kharch', 0) >= 0)
+        && ((data.get('current_month_bachat', 0) is int || data.get('current_month_bachat', 0) is float) && data.get('current_month_bachat', 0) >= 0)
         && (data.get('channels_config', []) is list);
     }
 
@@ -46,7 +46,7 @@ service cloud.firestore {
         && data.id is string && data.id.size() <= 128
         && data.user_id is string && data.user_id.size() <= 128
         && data.category is string && data.category.size() <= 100
-        && data.amount is number && data.amount >= 0
+        && (data.amount is int || data.amount is float) && data.amount >= 0
         && (data.get('date', '') is string && data.get('date', '').size() <= 100)
         && (data.get('title', '') is string && data.get('title', '').size() <= 200)
         && (data.get('type', '') is string && data.get('type', '').size() <= 100);
@@ -57,8 +57,8 @@ service cloud.firestore {
         && data.id is string && data.id.size() <= 128
         && data.user_id is string && data.user_id.size() <= 128
         && data.title is string && data.title.size() <= 200
-        && data.target_amount is number && data.target_amount >= 0
-        && (data.get('accumulated_amount', 0) is number && data.get('accumulated_amount', 0) >= 0)
+        && (data.target_amount is int || data.target_amount is float) && data.target_amount >= 0
+        && ((data.get('accumulated_amount', 0) is int || data.get('accumulated_amount', 0) is float) && data.get('accumulated_amount', 0) >= 0)
         && (data.get('category', '') is string && data.get('category', '').size() <= 100)
         && (data.get('status', '') is string && data.get('status', '').size() <= 100);
     }
