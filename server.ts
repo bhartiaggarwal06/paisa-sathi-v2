@@ -858,19 +858,46 @@ async function startServer() {
 // Helper function to extract cash transactions speak/written naturally by gig workers
 function parseTransactionFromMessage(message: string): { amount: number; type: 'expense' | 'income'; title: string; category: string } | null {
   if (!message) return null;
-  const text = message.toLowerCase();
+  const text = message.toLowerCase().trim();
   
-  // Try to find a credit/income intent vs. debit/expense intent
-  const expenseTriggers = [
-    'kharch', 'kharcha', 'spent', 'debit', 'diye', 'diyya', 'spend', 'buy', 'bought', 'kharida', 'kharide',
-    'kiraya', 'pay', 'paid', 'bhugtan', 'dhaba', 'hotel', 'chai', 'tea', 'petrol', 'diesel', 'medicine', 'dawai',
-    'medical', 'food', 'khana', 'gaye', 'loss', 'gaya', 'diya', 'diye'
-  ];
-  const incomeTriggers = [
-    'kamai', 'kamaya', 'earn', 'earned', 'mile', 'mila', 'mil', 'receive', 'received', 'credit', 'credited', 'salary',
-    'payout', 'paisa aaya', 'aaya', 'bachaya', 'bachaye', 'save', 'saved', 'income', 'milna', 'mili', 'aaye'
+  // 1. Strictly avoid any messages asking "how to save", "how much to save", or giving future "plans/views" about saving.
+  const querySavingTriggers = [
+    'how to save', 'how much to save', 'saving', 'save', 'bachat', 'bachayein', 'bachaye', 'bachao', 'bachana',
+    'kaise bachat', 'kaise bachaayein', 'kaise bachaaye', 'kaise save', 'kab save', 'where to save', 'sip kaise',
+    'invest', 'nivesh', 'sip', 'mutual fund', 'target', 'goal', 'planning', 'plan', 'challenge', 'chalenge'
   ];
 
+  const queryOrGuidanceWords = [
+    'how to', 'how much', 'tips', 'tip', 'advice', 'suggest', 'guide', 'help', 'can i', 'should i', 'how do i',
+    'how can i', 'could i', 'opinion', 'learn', 'teach', 'study', 'education', 'kaise', 'kab', 'tarika', 'tareeka',
+    'batao', 'samjhao', 'sikhao', 'seekhna', 'chahta hoon', 'chahti hoon', 'chahta hu', 'chahti hu', 'soch raha',
+    'soch rahi', 'idea', 'what if', 'kya hota hai', 'kya hai'
+  ];
+
+  const hypotheticalPhrases = [
+    'can save', 'will save', 'want to save', 'try to save', 'hope to save', 'i can', 'i will', 'a month',
+    'every month', 'monthly', 'per month', 'har mahine', 'har mahina', 'har din', 'roz', 'rozana', 'daily',
+    'yearly', 'per year', 'har saal', 'bacha sakta', 'bacha sakti', 'bacha sakte', 'bachana chahta',
+    'bachana chahti', 'saving goal', 'save target', 'soch raha hoon', 'soch rahi hoon'
+  ];
+
+  // If the message has saving/planning triggers AND query/guidance words, OR hypothetical phrases,
+  // then the user is asking/talking about "how to save", "how much to save", or their views, etc.
+  // We MUST reject and NOT register any transaction.
+  const hasSavingTrigger = querySavingTriggers.some(w => text.includes(w));
+  const hasQueryOrGuidance = queryOrGuidanceWords.some(w => text.includes(w));
+  const hasHypothetical = hypotheticalPhrases.some(w => text.includes(w));
+
+  if (hasHypothetical || (hasSavingTrigger && hasQueryOrGuidance)) {
+    return null;
+  }
+
+  // Also, if they are talking generalities like "i can save 3000", even if not matching above directly:
+  if (text.includes('can save') || text.includes('i can') || text.includes('i will') || text.includes('want to save') || text.includes('planning to')) {
+    return null;
+  }
+
+  // Next, let's parse the numbers out.
   // Regexp for numbers, including Devanagari numerals
   // Replace Devanagari numerals to English
   const devanagariMap: Record<string, string> = {
@@ -919,24 +946,52 @@ function parseTransactionFromMessage(message: string): { amount: number; type: '
 
   if (amount <= 0) return null;
 
-  // Detect type
-  let type: 'expense' | 'income' = 'expense'; // default is expense
-  let isExpenseDetected = expenseTriggers.some(w => cleanedText.includes(w));
-  let isIncomeDetected = incomeTriggers.some(w => cleanedText.includes(w));
+  // Now, the user says: "Add if and only if user explicitly mentioned that he spent particular amount in rent , food , grocery etc."
+  // Let's check for strong action keywords or exact category words that verify they actually did it.
+  
+  // Strict list of past/completed indicator words showing an action already did (spent or received):
+  const completedExpenseVerbs = [
+    'spent', 'spent', 'kharida', 'kharide', 'pay kiya', 'pay kiye', 'paid', 'diya', 'diye', 'diyya', 'bhara',
+    'gaye', 'kharch', 'kharcha', 'spent', 'bought', 'buy', 'payment done', 'sent'
+  ];
+  
+  const completedIncomeVerbs = [
+    'earned', 'kamaya', 'kamaye', 'mila', 'mile', 'received', 'receive', 'credited', 'paisa aaya', 'aaya'
+  ];
 
-  if (isIncomeDetected && !isExpenseDetected) {
+  // Specific spending/income categories specified by user (rent, food, grocery etc.)
+  const spendingItemKeywords = [
+    'rent', 'kiraya', 'room', 'makaan', 'makain',
+    'food', 'khana', 'hotel', 'dhaba', 'lunch', 'dinner', 'nashta', 'chai', 'tea',
+    'grocery', 'kirana', 'rashan', 'dukan', 'dost', 'friend', 'ramesh', 'bhai', 'yaar',
+    'petrol', 'diesel', 'fuel', 'auto', 'bus', 'travel', 'yatra', 'safar',
+    'medicine', 'dawai', 'medical', 'doctor', 'ill', 'bimar', 'hospital', 'recharge'
+  ];
+
+  const hasExpenseVerb = completedExpenseVerbs.some(w => cleanedText.includes(w));
+  const hasIncomeVerb = completedIncomeVerbs.some(w => cleanedText.includes(w));
+  const hasItemKeyword = spendingItemKeywords.some(w => cleanedText.includes(w));
+
+  // Determine type
+  let type: 'expense' | 'income' = 'expense';
+  
+  // Check if it's explicitly an income they already earned
+  if (hasIncomeVerb && !hasExpenseVerb) {
     type = 'income';
-  } else if (isExpenseDetected) {
+  } else if (hasExpenseVerb) {
     type = 'expense';
   } else {
-    if (cleanedText.includes('diye') || cleanedText.includes('kharch') || cleanedText.includes('gaye') || cleanedText.includes('spent')) {
+    // If no verb is found, but they entered something like "grocery 500", "chai 10", let's treat it as completed if it has an item keyword.
+    // Otherwise, do not add because they didn't explicitly mention spending or specific item.
+    if (hasItemKeyword) {
       type = 'expense';
-    } else if (cleanedText.includes('mile') || cleanedText.includes('kamaye') || cleanedText.includes('aaya')) {
-      type = 'income';
+    } else {
+      // No explicit verb or item, reject to ensure we add ONLY what user already did as an explicit expense/income
+      return null;
     }
   }
 
-  // Determine category and descriptive title
+  // Categorize
   let category = 'General';
   let title = '';
 
@@ -955,7 +1010,7 @@ function parseTransactionFromMessage(message: string): { amount: number; type: '
   } else if (cleanedText.includes('dost') || cleanedText.includes('friend') || cleanedText.includes('ramesh') || cleanedText.includes('bhai') || cleanedText.includes('yaar')) {
     category = 'General';
     title = type === 'expense' ? 'Dost ko diye' : 'Dost se mile';
-  } else if (cleanedText.includes('rent') || cleanedText.includes('kiraya')) {
+  } else if (cleanedText.includes('rent') || cleanedText.includes('kiraya') || cleanedText.includes('room') || cleanedText.includes('makaan')) {
     category = 'Rent';
     title = 'Makaan Kiraya';
   }
